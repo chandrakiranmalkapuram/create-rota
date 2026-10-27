@@ -6,6 +6,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.scheduler import BreakPolicySpec
 from app.schemas.staff import SkillResponse
 
 TIME_REGEX = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -73,6 +74,17 @@ class StaffingRequirementResponse(BaseModel):
 # Shift Schemas
 # ---------------------------------------------------------
 
+class ShiftOverrideAuditResponse(BaseModel):
+    id: str
+    shift_id: str
+    user_id: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    status: str
+    overridden_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ShiftResponse(BaseModel):
     id: str
     rota_id: str
@@ -87,6 +99,7 @@ class ShiftResponse(BaseModel):
     skill_name: str | None = None
     status: str
     notes: str | None = None
+    active_override: ShiftOverrideAuditResponse | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -102,6 +115,28 @@ class DiagnosticItem(BaseModel):
     date: dt_date | None = None
     band: str | None = None
     staff_name: str | None = None
+    is_proven: bool = False
+
+
+class RelaxationSuggestionResponse(BaseModel):
+    id: str
+    category: str
+    is_confirmed: bool
+    title: str
+    description: str
+    affected_date: dt_date | None = None
+    affected_band: str | None = None
+    affected_staff_id: str | None = None
+    affected_staff_name: str | None = None
+    potential_impact: str
+
+
+class AssumptionsResponse(BaseModel):
+    break_policy_name: str
+    break_tiers_summary: str
+    rest_period_hours: float
+    random_seed: int
+    compliance_disclaimer: str
 
 
 class GenerationRunResponse(BaseModel):
@@ -112,6 +147,8 @@ class GenerationRunResponse(BaseModel):
     shifts_created: int
     coverage_score: float
     diagnostics: list[DiagnosticItem] = Field(default_factory=list)
+    relaxation_suggestions: list[RelaxationSuggestionResponse] = Field(default_factory=list)
+    assumptions: AssumptionsResponse | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -189,6 +226,7 @@ class RotaDetailResponse(RotaResponse):
     requirements: list[StaffingRequirementResponse] = Field(default_factory=list)
     shifts: list[ShiftResponse] = Field(default_factory=list)
     latest_run: GenerationRunResponse | None = None
+    snapshots_count: int = 0
 
 
 class GenerateRotaRequest(BaseModel):
@@ -197,6 +235,15 @@ class GenerateRotaRequest(BaseModel):
         ge=1.0,
         le=60.0,
         description="Maximum solver time in seconds (1.0 to 60.0)",
+    )
+    random_seed: int = Field(
+        default=42,
+        ge=0,
+        description="Configurable seed for deterministic, repeatable schedule generation",
+    )
+    break_policy: BreakPolicySpec | None = Field(
+        default=None,
+        description="Optional configurable break policy override",
     )
 
 
@@ -207,3 +254,131 @@ class BulkRequirementsUpdateRequest(BaseModel):
 class CopyRequirementsRequest(BaseModel):
     source_date: dt_date
     target_dates: list[dt_date]
+
+
+# ---------------------------------------------------------
+# Snapshot & Restoration Schemas
+# ---------------------------------------------------------
+
+class RotaSnapshotResponse(BaseModel):
+    id: str
+    rota_id: str
+    workspace_id: str
+    created_by_id: str | None = None
+    snapshot_reason: str
+    description: str | None = None
+    shifts_count: int
+    coverage_score: float
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RestoreSnapshotResponse(BaseModel):
+    message: str
+    restored_shifts_count: int
+    safety_snapshot_id: str | None = None
+    rota: RotaDetailResponse
+
+
+# ---------------------------------------------------------
+# Manual Shift Management & Validation Schemas (Milestone 6)
+# ---------------------------------------------------------
+
+class ShiftCreate(BaseModel):
+    staff_id: str = Field(..., description="Staff member ID assigned to this shift")
+    date: dt_date = Field(..., description="Date of the shift")
+    start_time: str = Field(..., description="Start time in HH:MM format")
+    end_time: str = Field(..., description="End time in HH:MM format")
+    skill_id: str | None = Field(default=None, description="Optional required skill ID")
+    unpaid_break_minutes: int | None = Field(default=None, ge=0, le=360, description="Optional override for unpaid break minutes")
+    notes: str | None = Field(default=None, max_length=500, description="Optional manager notes")
+    override_warnings: bool = Field(default=False, description="Set to true if manager explicitly acknowledges and overrides non-blocking warnings")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        if not TIME_REGEX.match(v):
+            raise ValueError("Time must be in 24-hour HH:MM format (e.g., '09:00' or '17:30').")
+        return v
+
+
+class ShiftUpdate(BaseModel):
+    staff_id: str | None = Field(default=None, description="Reassign to another staff member ID")
+    date: dt_date | None = Field(default=None, description="Move shift to a different date")
+    start_time: str | None = Field(default=None, description="Updated start time (HH:MM)")
+    end_time: str | None = Field(default=None, description="Updated end time (HH:MM)")
+    skill_id: str | None = Field(default=None, description="Updated skill ID (or null to remove)")
+    unpaid_break_minutes: int | None = Field(default=None, ge=0, le=360, description="Override unpaid break minutes")
+    notes: str | None = Field(default=None, max_length=500, description="Updated notes")
+    override_warnings: bool = Field(default=False, description="Acknowledge and override non-blocking warnings")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v: str | None) -> str | None:
+        if v is not None and not TIME_REGEX.match(v):
+            raise ValueError("Time must be in 24-hour HH:MM format (e.g., '09:00' or '17:30').")
+        return v
+
+
+class ShiftCopyRequest(BaseModel):
+    target_date: dt_date = Field(..., description="Date to copy shift to")
+    target_staff_id: str | None = Field(default=None, description="Optional staff ID to assign copy to (defaults to same staff)")
+    override_warnings: bool = Field(default=False, description="Acknowledge and override non-blocking warnings")
+
+
+class ShiftValidationFinding(BaseModel):
+    code: str = Field(..., description="Stable error/warning code (e.g. ARCHIVED_STAFF, OVERLAPPING_SHIFT)")
+    severity: str = Field(..., description="'blocking' (cannot save) or 'warning' (manager can override)")
+    message: str = Field(..., description="Human-readable explanation")
+    date: str | None = Field(default=None, description="Relevant date reference")
+    shift_id: str | None = Field(default=None, description="Relevant conflicting shift ID if applicable")
+
+
+class CoverageSummaryItem(BaseModel):
+    date: dt_date
+    target_staff_count: int
+    scheduled_staff_count: int
+    is_understaffed: bool
+    is_overstaffed: bool
+
+
+class ShiftValidationRequest(BaseModel):
+    shift_id: str | None = Field(default=None, description="Existing shift ID if editing (excluded from self-conflict checks)")
+    staff_id: str = Field(..., description="Staff member ID")
+    date: dt_date = Field(..., description="Shift date")
+    start_time: str = Field(..., description="Start time (HH:MM)")
+    end_time: str = Field(..., description="End time (HH:MM)")
+    skill_id: str | None = Field(default=None, description="Optional skill ID")
+    unpaid_break_minutes: int | None = Field(default=None, description="Optional break override")
+
+    @field_validator("start_time", "end_time")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        if not TIME_REGEX.match(v):
+            raise ValueError("Time must be in 24-hour HH:MM format (e.g., '09:00' or '17:30').")
+        return v
+
+
+class ShiftValidationResponse(BaseModel):
+    is_valid: bool = Field(..., description="True if no blocking errors exist")
+    has_warnings: bool = Field(..., description="True if one or more warnings exist")
+    can_override: bool = Field(..., description="True if save can proceed with manager override")
+    findings: list[ShiftValidationFinding] = Field(default_factory=list)
+    gross_hours: float
+    unpaid_break_minutes: int
+    paid_hours: float
+    assumptions_summary: str
+    daily_coverage: CoverageSummaryItem | None = None
+    adjacent_rest_checks: dict[str, str] = Field(
+        default_factory=dict,
+        description="Verification status of adjacent rota weeks (e.g. 'previous_week': 'verified' | 'unavailable')",
+    )
+
+
+class ShiftMutationResponse(BaseModel):
+    shift: ShiftResponse
+    warnings: list[ShiftValidationFinding] = Field(default_factory=list)
+    message: str
+    rota: RotaDetailResponse
+

@@ -1,7 +1,9 @@
 from app.models.rota import (
     GenerationRun,
     Rota,
+    RotaSnapshot,
     Shift,
+    ShiftOverrideAudit,
     StaffingRequirement,
     StaffingRequirementBand,
 )
@@ -23,7 +25,9 @@ __all__ = [
     "GenerationRun",
     "PasswordResetToken",
     "Rota",
+    "RotaSnapshot",
     "Shift",
+    "ShiftOverrideAudit",
     "Skill",
     "StaffContract",
     "StaffMember",

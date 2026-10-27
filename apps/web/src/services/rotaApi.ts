@@ -2,6 +2,13 @@ import {
   Rota,
   RotaCreateInput,
   RotaDetail,
+  RotaSnapshot,
+  ShiftCopyInput,
+  ShiftCreateInput,
+  ShiftMutationResponse,
+  ShiftUpdateInput,
+  ShiftValidationInput,
+  ShiftValidationResponse,
   StaffingRequirementInput,
 } from "../types/rota";
 
@@ -170,16 +177,31 @@ export const copyRequirements = async (
 export const generateRota = async (
   workspaceId: string,
   rotaId: string,
-  timeLimitSeconds: number = 10.0,
+  options: {
+    timeLimitSeconds?: number;
+    randomSeed?: number;
+    breakPolicy?: any;
+  } | number = 10.0,
   token: string
 ): Promise<RotaDetail> => {
+  let bodyPayload: any;
+  if (typeof options === "number") {
+    bodyPayload = { time_limit_seconds: options };
+  } else {
+    bodyPayload = {
+      time_limit_seconds: options.timeLimitSeconds ?? 10.0,
+      random_seed: options.randomSeed ?? 42,
+      ...(options.breakPolicy ? { break_policy: options.breakPolicy } : {}),
+    };
+  }
+
   const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/generate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ time_limit_seconds: timeLimitSeconds }),
+    body: JSON.stringify(bodyPayload),
   });
 
   if (!res.ok) {
@@ -188,3 +210,169 @@ export const generateRota = async (
   }
   return res.json();
 };
+
+export const fetchRotaSnapshots = async (
+  workspaceId: string,
+  rotaId: string,
+  token: string
+): Promise<RotaSnapshot[]> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/snapshots`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to fetch snapshots.");
+  }
+  return res.json();
+};
+
+export const restoreRotaSnapshot = async (
+  workspaceId: string,
+  rotaId: string,
+  snapshotId: string,
+  token: string
+): Promise<{ message: string; restored_shifts_count: number; safety_snapshot_id?: string | null; rota: RotaDetail }> => {
+  const res = await fetch(
+    `/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/snapshots/${snapshotId}/restore`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to restore snapshot.");
+  }
+  return res.json();
+};
+
+// ---------------------------------------------------------
+// Manual Shift Management Client Functions (Milestone 6)
+// ---------------------------------------------------------
+
+export const validateShift = async (
+  workspaceId: string,
+  rotaId: string,
+  data: ShiftValidationInput,
+  token: string
+): Promise<ShiftValidationResponse> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/shifts/validate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    const message = typeof error.detail === "object" ? error.detail.message : error.detail;
+    throw new Error(message || "Validation failed.");
+  }
+  return res.json();
+};
+
+export const createShift = async (
+  workspaceId: string,
+  rotaId: string,
+  data: ShiftCreateInput,
+  token: string
+): Promise<ShiftMutationResponse> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/shifts`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    const message = typeof error.detail === "object" ? error.detail.message : error.detail;
+    const err = new Error(message || "Failed to create shift.") as Error & { details?: any };
+    err.details = error.detail;
+    throw err;
+  }
+  return res.json();
+};
+
+export const updateShift = async (
+  workspaceId: string,
+  rotaId: string,
+  shiftId: string,
+  data: ShiftUpdateInput,
+  token: string
+): Promise<ShiftMutationResponse> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/shifts/${shiftId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    const message = typeof error.detail === "object" ? error.detail.message : error.detail;
+    const err = new Error(message || "Failed to update shift.") as Error & { details?: any };
+    err.details = error.detail;
+    throw err;
+  }
+  return res.json();
+};
+
+export const deleteShift = async (
+  workspaceId: string,
+  rotaId: string,
+  shiftId: string,
+  token: string
+): Promise<{ message: string; rota: RotaDetail }> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/shifts/${shiftId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to delete shift.");
+  }
+  return res.json();
+};
+
+export const copyShift = async (
+  workspaceId: string,
+  rotaId: string,
+  shiftId: string,
+  data: ShiftCopyInput,
+  token: string
+): Promise<ShiftMutationResponse> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/shifts/${shiftId}/copy`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    const message = typeof error.detail === "object" ? error.detail.message : error.detail;
+    const err = new Error(message || "Failed to copy shift.") as Error & { details?: any };
+    err.details = error.detail;
+    throw err;
+  }
+  return res.json();
+};
+

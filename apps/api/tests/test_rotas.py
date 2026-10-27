@@ -437,3 +437,245 @@ def test_workspace_isolation_and_idor(client: TestClient):
         headers=headers_b,
     )
     assert idor_del_resp.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_pre_generation_snapshot_and_restoration(client: TestClient):
+    headers, ws_id = _setup_user_and_workspace(client, "snapshot_mgr@example.com", "SnapMgr")
+
+    # Create staff
+    client.post(
+        f"/api/v1/workspaces/{ws_id}/staff",
+        json={"first_name": "Bob", "last_name": "Builder", "category": "full_time"},
+        headers=headers,
+    )
+
+    # Create 2-day rota
+    rota_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas",
+        json={
+            "name": "Snapshot Test Rota",
+            "start_date": "2026-11-02",
+            "end_date": "2026-11-03",
+            "default_band_start": "09:00",
+            "default_band_end": "17:00",
+            "default_staff_count": 1,
+        },
+        headers=headers,
+    )
+    rota_id = rota_resp.json()["id"]
+
+    # Initial generation (Seed 42)
+    gen1 = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 10.0, "random_seed": 42},
+        headers=headers,
+    )
+    assert gen1.status_code == status.HTTP_200_OK
+    assert len(gen1.json()["shifts"]) == 2
+    original_shift_dates = [s["date"] for s in gen1.json()["shifts"]]
+
+    # Verify no snapshots exist yet (first generation had no prior draft shifts)
+    snap_list_1 = client.get(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/snapshots",
+        headers=headers,
+    )
+    assert snap_list_1.status_code == status.HTTP_200_OK
+    assert len(snap_list_1.json()) == 0
+
+    # Second generation (Seed 99) -> must automatically create pre_generation snapshot!
+    gen2 = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 10.0, "random_seed": 99},
+        headers=headers,
+    )
+    assert gen2.status_code == status.HTTP_200_OK
+
+    # Verify pre_generation snapshot now exists
+    snap_list_2 = client.get(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/snapshots",
+        headers=headers,
+    )
+    assert snap_list_2.status_code == status.HTTP_200_OK
+    snapshots = snap_list_2.json()
+    assert len(snapshots) == 1
+    assert snapshots[0]["snapshot_reason"] == "pre_generation"
+    assert snapshots[0]["shifts_count"] == 2
+    snapshot_id = snapshots[0]["id"]
+
+    # Clear requirements on Tuesday (2026-11-03) so subsequent generation produces only 1 shift
+    client.put(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/requirements",
+        json={
+            "requirements": [
+                {"date": "2026-11-02", "bands": [{"start_time": "09:00", "end_time": "17:00", "target_staff_count": 1}]},
+                {"date": "2026-11-03", "bands": []},
+            ]
+        },
+        headers=headers,
+    )
+    gen3 = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 10.0},
+        headers=headers,
+    )
+    assert gen3.status_code == status.HTTP_200_OK
+    assert len(gen3.json()["shifts"]) == 1
+
+    # Restore the original snapshot containing 2 shifts
+    restore_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/snapshots/{snapshot_id}/restore",
+        headers=headers,
+    )
+    assert restore_resp.status_code == status.HTTP_200_OK
+    restore_data = restore_resp.json()
+    assert restore_data["restored_shifts_count"] == 2
+    assert len(restore_data["rota"]["shifts"]) == 2
+    restored_dates = [s["date"] for s in restore_data["rota"]["shifts"]]
+    assert restored_dates == original_shift_dates
+
+    # Historical snapshots must be preserved (and a pre_restore safety snapshot created)
+    snap_list_3 = client.get(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/snapshots",
+        headers=headers,
+    )
+    assert snap_list_3.status_code == status.HTTP_200_OK
+    all_snaps = snap_list_3.json()
+    assert len(all_snaps) >= 2
+    assert any(s["id"] == snapshot_id for s in all_snaps)
+    assert any(s["snapshot_reason"] == "pre_restore" for s in all_snaps)
+
+
+def test_cannot_regenerate_or_restore_published_or_archived_rota(client: TestClient):
+    headers, ws_id = _setup_user_and_workspace(client, "pub_status@example.com", "PubMgr")
+
+    client.post(
+        f"/api/v1/workspaces/{ws_id}/staff",
+        json={"first_name": "Sam", "last_name": "Smith", "category": "full_time"},
+        headers=headers,
+    )
+
+    rota_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas",
+        json={
+            "name": "Status Protected Rota",
+            "start_date": "2026-11-02",
+            "end_date": "2026-11-03",
+        },
+        headers=headers,
+    )
+    rota_id = rota_resp.json()["id"]
+
+    # Initial generation in draft status works
+    gen_ok = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 5.0},
+        headers=headers,
+    )
+    assert gen_ok.status_code == status.HTTP_200_OK
+
+    # Mark rota as published
+    pub_resp = client.patch(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}",
+        json={"status": "published"},
+        headers=headers,
+    )
+    assert pub_resp.status_code == status.HTTP_200_OK
+    assert pub_resp.json()["status"] == "published"
+
+    # Attempt generate on published rota -> 400 Bad Request
+    gen_blocked = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 5.0},
+        headers=headers,
+    )
+    assert gen_blocked.status_code == status.HTTP_400_BAD_REQUEST
+    assert "published" in gen_blocked.json()["detail"]
+
+    # Attempt restore on published rota -> 400 Bad Request
+    restore_blocked = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/snapshots/fake-id/restore",
+        headers=headers,
+    )
+    assert restore_blocked.status_code == status.HTTP_400_BAD_REQUEST
+    assert "published" in restore_blocked.json()["detail"]
+
+
+def test_cross_workspace_snapshot_isolation(client: TestClient):
+    headers_a, ws_a_id = _setup_user_and_workspace(client, "snap_a@example.com", "SnapA")
+    headers_b, ws_b_id = _setup_user_and_workspace(client, "snap_b@example.com", "SnapB")
+
+    client.post(
+        f"/api/v1/workspaces/{ws_a_id}/staff",
+        json={"first_name": "Alice", "last_name": "A", "category": "full_time"},
+        headers=headers_a,
+    )
+
+    rota_a = client.post(
+        f"/api/v1/workspaces/{ws_a_id}/rotas",
+        json={
+            "name": "Workspace A Rota",
+            "start_date": "2026-11-02",
+            "end_date": "2026-11-03",
+        },
+        headers=headers_a,
+    ).json()
+    rota_a_id = rota_a["id"]
+
+    # Generate twice to produce snapshot
+    client.post(f"/api/v1/workspaces/{ws_a_id}/rotas/{rota_a_id}/generate", json={"time_limit_seconds": 5.0}, headers=headers_a)
+    client.post(f"/api/v1/workspaces/{ws_a_id}/rotas/{rota_a_id}/generate", json={"time_limit_seconds": 5.0}, headers=headers_a)
+
+    snaps_a = client.get(f"/api/v1/workspaces/{ws_a_id}/rotas/{rota_a_id}/snapshots", headers=headers_a).json()
+    assert len(snaps_a) >= 1
+    snap_a_id = snaps_a[0]["id"]
+
+    # User B tries to list snapshots of Rota A -> 403 / 404
+    cross_list = client.get(f"/api/v1/workspaces/{ws_a_id}/rotas/{rota_a_id}/snapshots", headers=headers_b)
+    assert cross_list.status_code in (status.HTTP_403_FORBIDDEN, status.HTTP_404_NOT_FOUND)
+
+    # User B tries to restore Snapshot A under Workspace B -> 404 Not Found
+    idor_restore = client.post(f"/api/v1/workspaces/{ws_b_id}/rotas/{rota_a_id}/snapshots/{snap_a_id}/restore", headers=headers_b)
+    assert idor_restore.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_custom_break_policy_in_generation(client: TestClient):
+    headers, ws_id = _setup_user_and_workspace(client, "break_pol@example.com", "BreakMgr")
+
+    client.post(
+        f"/api/v1/workspaces/{ws_id}/staff",
+        json={"first_name": "Carl", "last_name": "Contractor", "category": "full_time"},
+        headers=headers,
+    )
+
+    rota_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas",
+        json={
+            "name": "Custom Break Policy Rota",
+            "start_date": "2026-11-02",
+            "end_date": "2026-11-02",
+            "default_band_start": "09:00",
+            "default_band_end": "15:00",  # 6 hours
+            "default_staff_count": 1,
+        },
+        headers=headers,
+    )
+    rota_id = rota_resp.json()["id"]
+
+    # Pass custom break policy: 20m break for 6h+
+    custom_policy = {
+        "name": "custom_20m_policy",
+        "description": "20 minute break for 6 hours",
+        "tiers": [{"threshold_minutes": 360, "break_minutes": 20, "is_unpaid": True}],
+    }
+    gen_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate",
+        json={"time_limit_seconds": 5.0, "break_policy": custom_policy},
+        headers=headers,
+    )
+    assert gen_resp.status_code == status.HTTP_200_OK
+    data = gen_resp.json()
+    assert len(data["shifts"]) == 1
+    # 6 hours = 360 min - 20 min unpaid = 340 min = 5.67 paid hours
+    assert data["shifts"][0]["unpaid_break_minutes"] == 20
+    assert data["shifts"][0]["paid_hours"] == 5.67
+    assert data["latest_run"]["assumptions"]["break_policy_name"] == "custom_20m_policy"
