@@ -17,7 +17,25 @@ The codebase is organized as a clean, modular monorepo:
 
 ---
 
-## 🚀 Quick Start (Local Development)
+## 📅 Milestone 4: Rota Generation Engine
+
+Milestone 4 introduces automated, constraint-based rota generation using **Google OR-Tools CP-SAT**:
+
+- **Rota Periods & Staffing Demand**: Flexible start/end date selection, daily time bands, required headcount, and optional mandatory skills.
+- **Quick Day Copy**: Easily copy Monday's demand or custom day requirements to other days in the period.
+- **OR-Tools Constraint Engine**:
+  - **Mandatory Hard Constraints**: Active staff only, skills/roles matching, weekly availability & recurring days off, approved leave/sickness blocks (`UnavailabilityBlock`), no overlapping shifts, 11-hour minimum rest between shifts, maximum shifts per week, maximum hours per week, and consecutive working day limits.
+  - **Soft Objectives**: Minimize unmet demand slots (weight 10,000) and minimize absolute deviation from contracted weekly hours (weight 1).
+- **Honest Solver Outcomes & Diagnostics**:
+  - `feasible`: 100% coverage achieved.
+  - `partially_feasible`: Valid partial schedule with specific diagnostics on unfilled slots.
+  - `infeasible`: Clear explanation of conflicting constraints (e.g. missing skills or 0 active staff).
+  - `timeout`: Solver reached configured time limit.
+- **Multi-Tenant Workspace Isolation**: Full IDOR protection ensuring rotas and generated shifts are strictly isolated per workspace.
+
+---
+
+## 🚀 Quick Start (Local Development on macOS)
 
 ### 1. Prerequisites
 - **Node.js**: v18+ (tested on Node v22)
@@ -25,18 +43,12 @@ The codebase is organized as a clean, modular monorepo:
 - **Docker** (optional for containerized PostgreSQL and Mailpit, or use local SQLite for instant zero-dependency testing)
 
 ### 2. Environment Setup
-Copy the example environment file to both root and backend:
+Copy the example environment file:
 ```bash
 cp .env.example .env
 ```
 
-### 3. Start Database & Local Email (Optional with Docker)
-```bash
-docker compose -f infra/docker-compose.yml up -d
-```
-*Note: If Docker is not running, the application can use a local SQLite database for development and testing.*
-
-### 4. Backend Setup & Run
+### 3. Backend Setup & Run (macOS)
 ```bash
 cd apps/api
 python3.11 -m venv .venv
@@ -50,11 +62,12 @@ alembic upgrade head
 # Start API server on http://localhost:8000
 uvicorn app.main:app --reload --port 8000
 ```
+
 API Documentation will be available at:
 - Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
 - Health check: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
 
-### 5. Frontend Setup & Run
+### 4. Frontend Setup & Run (macOS)
 In a separate terminal:
 ```bash
 cd apps/web
@@ -67,20 +80,46 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ## 🧪 Running Tests & Quality Checks
 
-### Backend Tests (pytest & ruff):
+### Backend Tests & Ruff Linter:
 ```bash
 cd apps/api
 source .venv/bin/activate
+
+# Run all 35 unit & integration tests
 pytest
+
+# Run Ruff linter checks
 ruff check .
 ```
 
-### Frontend Tests & Type Checking (Vitest & tsc):
+### Frontend Tests, TypeScript Validation, & Build:
 ```bash
 cd apps/web
+
+# Run all 22 Vitest frontend tests
 npm run test:run
+
+# Type checking
+npx tsc --noEmit
+
+# Production build bundle
 npm run build
 ```
+
+---
+
+## 📡 API Endpoints (Milestone 4 Additions)
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/v1/workspaces/{ws_id}/rotas` | List rotas with pagination & status filters |
+| `POST` | `/api/v1/workspaces/{ws_id}/rotas` | Create a new rota period & template demand |
+| `GET` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}` | Retrieve rota with requirements, shifts, & latest run |
+| `PATCH` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}` | Update rota name or status |
+| `DELETE` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}` | Delete rota & cascaded requirements/shifts |
+| `PUT` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}/requirements` | Bulk update daily staffing time bands |
+| `POST` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}/copy-requirements` | Copy daily demand to multiple target dates |
+| `POST` | `/api/v1/workspaces/{ws_id}/rotas/{rota_id}/generate` | Run OR-Tools CP-SAT constraint generation engine |
 
 ---
 

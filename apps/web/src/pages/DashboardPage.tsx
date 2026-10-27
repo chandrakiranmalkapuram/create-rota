@@ -114,10 +114,17 @@ export const DashboardPage: React.FC = () => {
           <div className="flex items-center gap-2 self-start sm:self-auto">
             <Link
               to="/staff"
-              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 transition-all"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 transition-all"
             >
               <Users className="h-4 w-4" />
               <span>Manage Staff</span>
+            </Link>
+            <Link
+              to="/rotas"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 transition-all"
+            >
+              <Calendar className="h-4 w-4" />
+              <span>Manage Rotas</span>
             </Link>
           </div>
         </div>
@@ -149,14 +156,20 @@ export const DashboardPage: React.FC = () => {
           <p className="text-[11px] text-slate-500">Weekly contracted target</p>
         </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2 shadow-sm">
+        <Link
+          to="/rotas"
+          className="rounded-xl border border-slate-200 bg-white p-5 space-y-2 shadow-sm hover:border-emerald-300 transition-all group"
+        >
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-            <span>Active Rota Period</span>
-            <Calendar className="h-4 w-4 text-slate-400" />
+            <span>Rotas & Schedules</span>
+            <Calendar className="h-4 w-4 text-slate-400 group-hover:text-emerald-600 transition-colors" />
           </div>
-          <div className="text-sm font-semibold text-slate-700 mt-1">None active</div>
-          <p className="text-[11px] text-slate-500">Period setup in Milestone 4</p>
-        </div>
+          <div className="text-sm font-bold text-slate-900 mt-1">OR-Tools Engine</div>
+          <p className="text-[11px] text-slate-500 flex items-center justify-between">
+            <span>Configure demand & solve</span>
+            <span className="text-emerald-600 font-semibold group-hover:underline">Open →</span>
+          </p>
+        </Link>
 
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-2 shadow-sm">
           <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
@@ -166,7 +179,7 @@ export const DashboardPage: React.FC = () => {
           <div className="text-sm font-semibold text-emerald-700 mt-1 flex items-center gap-1">
             <CheckCircle2 className="h-4 w-4" /> Ready (OR-Tools)
           </div>
-          <p className="text-[11px] text-slate-500">Generation in Milestone 5</p>
+          <p className="text-[11px] text-slate-500">Constraint programming live</p>
         </div>
       </div>
 

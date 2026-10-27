@@ -16,6 +16,8 @@ import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { ResetPasswordPage } from "./pages/ResetPasswordPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { StaffPage } from "./pages/StaffPage";
+import { RotasPage } from "./pages/RotasPage";
+import { RotaDetailPage } from "./pages/RotaDetailPage";
 import { AlertCircle } from "lucide-react";
 
 const queryClient = new QueryClient({
@@ -76,6 +78,22 @@ export const App: React.FC = () => {
                   element={
                     <ProtectedRoute>
                       <StaffPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/rotas"
+                  element={
+                    <ProtectedRoute>
+                      <RotasPage />
+                    </ProtectedRoute>
+                  }
+                />
+                <Route
+                  path="/rotas/:rotaId"
+                  element={
+                    <ProtectedRoute>
+                      <RotaDetailPage />
                     </ProtectedRoute>
                   }
                 />

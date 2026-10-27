@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.rota import Rota
     from app.models.staff import Skill, StaffMember
     from app.models.user import User
 
@@ -42,6 +43,11 @@ class Workspace(Base, TimestampMixin):
     )
     skills: Mapped[list["Skill"]] = relationship(
         "Skill",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+    rotas: Mapped[list["Rota"]] = relationship(
+        "Rota",
         back_populates="workspace",
         cascade="all, delete-orphan",
     )

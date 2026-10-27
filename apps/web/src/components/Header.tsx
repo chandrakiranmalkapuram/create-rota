@@ -79,6 +79,17 @@ export const Header: React.FC = () => {
                 <Users className="h-4 w-4" />
                 <span>Staff</span>
               </Link>
+              <Link
+                to="/rotas"
+                className={`text-sm font-medium transition-colors inline-flex items-center gap-1.5 ${
+                  location.pathname.startsWith("/rotas")
+                    ? "text-emerald-700 font-semibold"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <CalendarClock className="h-4 w-4" />
+                <span>Rotas</span>
+              </Link>
             </>
           )}
         </nav>
@@ -170,6 +181,13 @@ export const Header: React.FC = () => {
                   className="rounded-md px-3 py-2 text-base font-medium text-emerald-700 font-semibold hover:bg-slate-100"
                 >
                   Staff
+                </Link>
+                <Link
+                  to="/rotas"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="rounded-md px-3 py-2 text-base font-medium text-emerald-700 font-semibold hover:bg-slate-100"
+                >
+                  Rotas
                 </Link>
               </>
             )}
