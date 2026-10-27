@@ -100,6 +100,9 @@ export interface Rota {
   start_date: string; // "YYYY-MM-DD"
   end_date: string; // "YYYY-MM-DD"
   status: "draft" | "published" | "archived";
+  published_at?: string | null;
+  published_by_user_id?: string | null;
+  archived_at?: string | null;
   total_shifts: number;
   total_paid_hours: number;
   latest_generation_status: SolverOutcomeStatus | null;
@@ -112,6 +115,23 @@ export interface RotaDetail extends Rota {
   shifts: Shift[];
   latest_run: GenerationRun | null;
   snapshots_count?: number;
+}
+
+export interface RotaDuplicateInput {
+  new_name: string;
+  new_start_date: string; // "YYYY-MM-DD"
+  new_end_date: string; // "YYYY-MM-DD"
+  copy_requirements?: boolean;
+  copy_shifts?: boolean;
+}
+
+export type ExportFormat = "csv" | "xlsx" | "pdf" | "docx";
+export type ExportView = "staff" | "day";
+
+export interface ExportOptions {
+  format: ExportFormat;
+  view?: ExportView;
+  include_notes?: boolean;
 }
 
 export interface RotaCreateInput {

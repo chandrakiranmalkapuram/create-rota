@@ -1,9 +1,10 @@
 import json
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -31,6 +32,7 @@ from app.schemas.rota import (
     RestoreSnapshotResponse,
     RotaCreateRequest,
     RotaDetailResponse,
+    RotaDuplicateRequest,
     RotaResponse,
     RotaSnapshotResponse,
     RotaUpdateRequest,
@@ -44,6 +46,12 @@ from app.schemas.rota import (
     ShiftValidationResponse,
     StaffingRequirementBandResponse,
     StaffingRequirementResponse,
+)
+from app.services.rota_export import (
+    generate_rota_csv,
+    generate_rota_docx,
+    generate_rota_pdf,
+    generate_rota_xlsx,
 )
 from app.services.scheduler import calculate_band_durations, generate_rota_schedule
 from app.services.shift_validation import validate_shift_candidate
@@ -209,6 +217,9 @@ def _format_rota_detail(rota: Rota) -> RotaDetailResponse:
         start_date=rota.start_date,
         end_date=rota.end_date,
         status=rota.status,
+        published_at=rota.published_at,
+        published_by_user_id=rota.published_by_user_id,
+        archived_at=rota.archived_at,
         total_shifts=total_shifts,
         total_paid_hours=total_paid_hours,
         latest_generation_status=latest_run.status if latest_run else None,
@@ -322,6 +333,9 @@ def list_rotas(
                 start_date=r.start_date,
                 end_date=r.end_date,
                 status=r.status,
+                published_at=r.published_at,
+                published_by_user_id=r.published_by_user_id,
+                archived_at=r.archived_at,
                 total_shifts=total_shifts,
                 total_paid_hours=total_paid_hours,
                 latest_generation_status=latest_run.status if latest_run else None,
@@ -419,12 +433,20 @@ def update_rota(
     membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Update rota name or status (draft, published, archived)."""
+    """Update rota name on draft rotas. Lifecycle status transitions must use dedicated endpoints."""
     rota = _get_rota_or_404(rota_id, workspace_id, db)
+
+    # 1. Strictly reject all PATCH modifications on published or archived rotas
+    if rota.status in ("published", "archived"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot modify a {rota.status} rota. Use dedicated lifecycle endpoints (/unpublish or /unarchive) to revert to draft first.",
+        )
+
+    # 2. Update name on draft rota
     if payload.name is not None:
         rota.name = payload.name
-    if payload.status is not None:
-        rota.status = payload.status
+
     db.commit()
     db.refresh(rota)
     return _format_rota_detail(_get_rota_or_404(rota_id, workspace_id, db))
@@ -440,8 +462,13 @@ def delete_rota(
     membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
     db: Annotated[Session, Depends(get_db)],
 ):
-    """Delete a rota and its associated requirements, shifts, and generation runs."""
+    """Delete a draft or archived rota and cascade purge its shifts, requirements, runs, and audits."""
     rota = _get_rota_or_404(rota_id, workspace_id, db)
+    if rota.status == "published":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete a published rota. Unpublish or archive the rota first.",
+        )
     db.delete(rota)
     db.commit()
 
@@ -464,7 +491,11 @@ def update_requirements(
     """
     rota = _get_rota_or_404(rota_id, workspace_id, db)
 
-    # Validate all dates are within rota range
+    if rota.status in ("published", "archived"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot update staffing requirements on a {rota.status} rota.",
+        )
     for req_input in payload.requirements:
         if req_input.date < rota.start_date or req_input.date > rota.end_date:
             raise HTTPException(
@@ -530,6 +561,12 @@ def copy_requirements(
     Quick action: Copy requirement bands from a source date to multiple target dates.
     """
     rota = _get_rota_or_404(rota_id, workspace_id, db)
+
+    if rota.status in ("published", "archived"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot copy staffing requirements into a {rota.status} rota.",
+        )
 
     source_req = next((r for r in rota.requirements if r.date == payload.source_date), None)
     if not source_req or not source_req.bands:
@@ -1277,3 +1314,282 @@ def copy_shift(
         rota=_format_rota_detail(updated_rota),
     )
 
+
+# ---------------------------------------------------------
+# Lifecycle Management Endpoints (Milestone 7)
+# ---------------------------------------------------------
+
+@router.post(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/approve",
+    response_model=RotaDetailResponse,
+    status_code=status.HTTP_200_OK,
+)
+def approve_rota(
+    workspace_id: str,
+    rota_id: str,
+    membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """
+    Mark rota as reviewed and published.
+    Requires at least 1 shift and records authenticated actor and timestamp atomically.
+    """
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+    if rota.status == "published":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Rota is already published.",
+        )
+    if rota.status == "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot publish an archived rota. Unarchive to draft first.",
+        )
+    if not rota.shifts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot publish an empty rota with no shifts.",
+        )
+
+    rota.status = "published"
+    rota.published_at = datetime.now(UTC)
+    rota.published_by_user_id = membership.user_id
+
+    db.commit()
+    return _format_rota_detail(_get_rota_or_404(rota_id, workspace_id, db))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/unpublish",
+    response_model=RotaDetailResponse,
+    status_code=status.HTTP_200_OK,
+)
+def unpublish_rota(
+    workspace_id: str,
+    rota_id: str,
+    membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Revert a published rota back to draft status to allow modifications."""
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+    if rota.status != "published":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only published rotas can be unpublished.",
+        )
+
+    rota.status = "draft"
+    rota.published_at = None
+    rota.published_by_user_id = None
+
+    db.commit()
+    return _format_rota_detail(_get_rota_or_404(rota_id, workspace_id, db))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/archive",
+    response_model=RotaDetailResponse,
+    status_code=status.HTTP_200_OK,
+)
+def archive_rota(
+    workspace_id: str,
+    rota_id: str,
+    membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Archive a rota to preserve historical records while removing it from active views."""
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+    if rota.status == "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Rota is already archived.",
+        )
+
+    rota.status = "archived"
+    rota.archived_at = datetime.now(UTC)
+
+    db.commit()
+    return _format_rota_detail(_get_rota_or_404(rota_id, workspace_id, db))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/unarchive",
+    response_model=RotaDetailResponse,
+    status_code=status.HTTP_200_OK,
+)
+def unarchive_rota(
+    workspace_id: str,
+    rota_id: str,
+    membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """Restore an archived rota back to draft status."""
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+    if rota.status != "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only archived rotas can be unarchived.",
+        )
+
+    rota.status = "draft"
+    rota.archived_at = None
+    rota.published_at = None
+    rota.published_by_user_id = None
+
+    db.commit()
+    return _format_rota_detail(_get_rota_or_404(rota_id, workspace_id, db))
+
+
+@router.post(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/duplicate",
+    response_model=RotaDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def duplicate_rota(
+    workspace_id: str,
+    rota_id: str,
+    payload: RotaDuplicateRequest,
+    membership: Annotated[WorkspaceMembership, Depends(require_workspace_role(["owner", "admin"]))],
+    db: Annotated[Session, Depends(get_db)],
+):
+    """
+    Duplicate an existing rota into a new date period.
+    Maps day offsets from the source rota to the target period.
+    Does not copy snapshots, generation runs, or manager override audits.
+    """
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+
+    # Validate target duration matches source rota duration
+    source_days = (rota.end_date - rota.start_date).days
+    target_days = (payload.end_date - payload.start_date).days
+    if source_days != target_days:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Target date range length ({target_days + 1} days) must match source rota duration ({source_days + 1} days).",
+        )
+
+    # Collision check: Prevent accidental duplicate active rotas in same workspace and period
+    existing_active = db.scalar(
+        select(Rota).where(
+            Rota.workspace_id == workspace_id,
+            Rota.status.in_(["draft", "published"]),
+            Rota.start_date == payload.start_date,
+            Rota.end_date == payload.end_date,
+        )
+    )
+    if existing_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"An active rota ('{existing_active.name}') already exists for period {payload.start_date} to {payload.end_date}. Archive or delete the existing rota first.",
+        )
+
+    new_rota = Rota(
+        workspace_id=workspace_id,
+        name=payload.name,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        status="draft",
+        break_policy=rota.break_policy,
+    )
+    db.add(new_rota)
+    db.flush()
+
+    if payload.copy_requirements:
+        for req in rota.requirements:
+            day_offset = (req.date - rota.start_date).days
+            target_date = payload.start_date + timedelta(days=day_offset)
+            new_req = StaffingRequirement(
+                rota_id=new_rota.id,
+                date=target_date,
+            )
+            db.add(new_req)
+            db.flush()
+            for band in req.bands:
+                new_band = StaffingRequirementBand(
+                    requirement_id=new_req.id,
+                    start_time=band.start_time,
+                    end_time=band.end_time,
+                    target_staff_count=band.target_staff_count,
+                    skill_id=band.skill_id,
+                )
+                db.add(new_band)
+
+    if payload.copy_shifts:
+        for s in rota.shifts:
+            day_offset = (s.date - rota.start_date).days
+            target_date = payload.start_date + timedelta(days=day_offset)
+            new_shift = Shift(
+                rota_id=new_rota.id,
+                staff_id=s.staff_id,
+                date=target_date,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                unpaid_break_minutes=s.unpaid_break_minutes,
+                skill_id=s.skill_id,
+                status="draft",
+                notes=s.notes,
+            )
+            db.add(new_shift)
+
+    db.commit()
+    return _format_rota_detail(_get_rota_or_404(new_rota.id, workspace_id, db))
+
+
+# ---------------------------------------------------------
+# Export Endpoint (Milestone 7)
+# ---------------------------------------------------------
+
+@router.get(
+    "/workspaces/{workspace_id}/rotas/{rota_id}/export",
+)
+def export_rota(
+    workspace_id: str,
+    rota_id: str,
+    membership: Annotated[WorkspaceMembership, Depends(get_workspace_membership)],
+    db: Annotated[Session, Depends(get_db)],
+    format: str = Query(default="csv", description="Export format: csv, xlsx, pdf, docx"),
+    view: str = Query(default="staff", description="View mode: staff or day"),
+    include_notes: bool = Query(default=False, description="Whether to include shift notes"),
+):
+    """
+    Export rota in CSV, XLSX, PDF, or DOCX format.
+    Shift notes are excluded by default for privacy.
+    Formula injection protection is applied to spreadsheet exports.
+    """
+    rota = _get_rota_or_404(rota_id, workspace_id, db)
+    format_lower = format.lower().strip()
+    view_lower = view.lower().strip()
+
+    if format_lower not in ("csv", "xlsx", "pdf", "docx"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported export format '{format}'. Supported formats: csv, xlsx, pdf, docx.",
+        )
+    if view_lower not in ("staff", "day"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported view '{view}'. Supported views: staff, day.",
+        )
+
+    # Safe filename slug
+    slug = re.sub(r"[^\w\-]", "_", rota.name)[:30].strip("_") or "schedule"
+    filename = f"rota_{slug}_{rota.start_date}_{view_lower}.{format_lower}"
+
+    if format_lower == "csv":
+        content = generate_rota_csv(rota, view=view_lower, include_notes=include_notes)
+        media_type = "text/csv; charset=utf-8"
+    elif format_lower == "xlsx":
+        content = generate_rota_xlsx(rota, view=view_lower, include_notes=include_notes)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif format_lower == "pdf":
+        content = generate_rota_pdf(rota, view=view_lower, include_notes=include_notes)
+        media_type = "application/pdf"
+    else:  # docx
+        content = generate_rota_docx(rota, view=view_lower, include_notes=include_notes)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

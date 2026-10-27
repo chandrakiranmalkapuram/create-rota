@@ -573,10 +573,9 @@ def test_cannot_regenerate_or_restore_published_or_archived_rota(client: TestCli
     )
     assert gen_ok.status_code == status.HTTP_200_OK
 
-    # Mark rota as published
-    pub_resp = client.patch(
-        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}",
-        json={"status": "published"},
+    # Mark rota as published via dedicated approve endpoint
+    pub_resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/approve",
         headers=headers,
     )
     assert pub_resp.status_code == status.HTTP_200_OK

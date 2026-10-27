@@ -15,10 +15,12 @@ import {
   Users,
   Timer,
   Sparkles,
+  Copy,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { fetchRotas, createRota, deleteRota } from "../services/rotaApi";
-import { RotaCreateInput } from "../types/rota";
+import { Rota, RotaCreateInput } from "../types/rota";
+import { DuplicateRotaModal } from "../components/DuplicateRotaModal";
 
 export const RotasPage: React.FC = () => {
   const { currentWorkspace, token } = useAuth();
@@ -28,6 +30,7 @@ export const RotasPage: React.FC = () => {
   const [page, setPage] = useState<number>(1);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
   const [deleteConfirmationId, setDeleteConfirmationId] = useState<string | null>(null);
+  const [rotaToDuplicate, setRotaToDuplicate] = useState<Rota | null>(null);
 
   // Form State
   const [formName, setFormName] = useState<string>("");
@@ -357,16 +360,35 @@ export const RotasPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setRotaToDuplicate(rota)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
+                      title={`Duplicate rota ${rota.name}`}
+                      aria-label={`Duplicate rota ${rota.name}`}
+                    >
+                      <Copy className="h-3.5 w-3.5 text-slate-500" />
+                      <span>Duplicate</span>
+                    </button>
+
                     <Link
                       to={`/rotas/${rota.id}`}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-sm"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
                     >
                       <span>Configure & Generate</span>
                       <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
                     </Link>
 
-                    {deleteConfirmationId === rota.id ? (
+                    {rota.status === "published" ? (
+                      <span
+                        className="inline-flex items-center p-1.5 text-slate-300 cursor-not-allowed"
+                        title="Published rotas cannot be deleted directly. Unpublish or archive first."
+                        aria-label="Published rotas cannot be deleted directly"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </span>
+                    ) : deleteConfirmationId === rota.id ? (
                       <div className="flex items-center gap-1 bg-rose-50 p-1 rounded-lg border border-rose-200">
                         <span className="text-xs text-rose-700 px-1 font-medium">Delete?</span>
                         <button
@@ -612,6 +634,19 @@ export const RotasPage: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Duplicate Rota Modal */}
+      {rotaToDuplicate && (
+        <DuplicateRotaModal
+          isOpen={Boolean(rotaToDuplicate)}
+          onClose={() => setRotaToDuplicate(null)}
+          rota={rotaToDuplicate}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+            setRotaToDuplicate(null);
+          }}
+        />
       )}
     </div>
   );

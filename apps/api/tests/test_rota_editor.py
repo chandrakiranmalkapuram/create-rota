@@ -451,8 +451,8 @@ def test_published_and_archived_rota_protection(client: TestClient):
         headers=headers,
     ).json()["shift"]
 
-    # Mark rota as published
-    pub = client.patch(f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}", json={"status": "published"}, headers=headers)
+    # Mark rota as published via dedicated approve endpoint
+    pub = client.post(f"/api/v1/workspaces/{ws_id}/rotas/{rota_id}/approve", headers=headers)
     assert pub.status_code == status.HTTP_200_OK
 
     # Create blocked

@@ -185,8 +185,9 @@ class RotaCreateRequest(BaseModel):
 
 
 class RotaUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=150)
-    status: str | None = Field(default=None)
 
     @field_validator("name")
     @classmethod
@@ -198,13 +199,6 @@ class RotaUpdateRequest(BaseModel):
             return cleaned
         return v
 
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v: str | None) -> str | None:
-        if v is not None and v not in ("draft", "published", "archived"):
-            raise ValueError("Status must be 'draft', 'published', or 'archived'.")
-        return v
-
 
 class RotaResponse(BaseModel):
     id: str
@@ -213,6 +207,9 @@ class RotaResponse(BaseModel):
     start_date: dt_date
     end_date: dt_date
     status: str
+    published_at: datetime | None = None
+    published_by_user_id: str | None = None
+    archived_at: datetime | None = None
     total_shifts: int = 0
     total_paid_hours: float = 0.0
     latest_generation_status: str | None = None
@@ -227,6 +224,31 @@ class RotaDetailResponse(RotaResponse):
     shifts: list[ShiftResponse] = Field(default_factory=list)
     latest_run: GenerationRunResponse | None = None
     snapshots_count: int = 0
+
+
+class RotaDuplicateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150, description="Name for the duplicated rota")
+    start_date: dt_date = Field(..., description="Target start date")
+    end_date: dt_date = Field(..., description="Target end date")
+    copy_requirements: bool = Field(default=True, description="Clone staffing requirements to new period")
+    copy_shifts: bool = Field(default=True, description="Clone assigned shifts to new period")
+
+    @field_validator("name")
+    @classmethod
+    def clean_name(cls, v: str) -> str:
+        cleaned = v.strip()
+        if not cleaned:
+            raise ValueError("Rota name cannot be empty.")
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> RotaDuplicateRequest:
+        if self.start_date > self.end_date:
+            raise ValueError("Start date must be before or equal to end date.")
+        delta = (self.end_date - self.start_date).days
+        if delta > 31:
+            raise ValueError("Rota period cannot exceed 31 days per generation batch.")
+        return self
 
 
 class GenerateRotaRequest(BaseModel):

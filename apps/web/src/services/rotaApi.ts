@@ -1,7 +1,9 @@
 import {
+  ExportOptions,
   Rota,
   RotaCreateInput,
   RotaDetail,
+  RotaDuplicateInput,
   RotaSnapshot,
   ShiftCopyInput,
   ShiftCreateInput,
@@ -89,7 +91,7 @@ export const createRota = async (
 export const updateRota = async (
   workspaceId: string,
   rotaId: string,
-  updates: { name?: string; status?: string },
+  updates: { name?: string },
   token: string
 ): Promise<RotaDetail> => {
   const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}`, {
@@ -374,5 +376,155 @@ export const copyShift = async (
     throw err;
   }
   return res.json();
+};
+
+export const duplicateRota = async (
+  workspaceId: string,
+  rotaId: string,
+  input: RotaDuplicateInput,
+  token: string
+): Promise<RotaDetail> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/duplicate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to duplicate rota.");
+  }
+  return res.json();
+};
+
+export const approveRota = async (
+  workspaceId: string,
+  rotaId: string,
+  token: string
+): Promise<RotaDetail> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/approve`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to publish rota.");
+  }
+  return res.json();
+};
+
+export const unpublishRota = async (
+  workspaceId: string,
+  rotaId: string,
+  token: string
+): Promise<RotaDetail> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/unpublish`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to unpublish rota.");
+  }
+  return res.json();
+};
+
+export const archiveRota = async (
+  workspaceId: string,
+  rotaId: string,
+  token: string
+): Promise<RotaDetail> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/archive`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to archive rota.");
+  }
+  return res.json();
+};
+
+export const unarchiveRota = async (
+  workspaceId: string,
+  rotaId: string,
+  token: string
+): Promise<RotaDetail> => {
+  const res = await fetch(`/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/unarchive`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to unarchive rota.");
+  }
+  return res.json();
+};
+
+export const downloadRotaExport = async (
+  workspaceId: string,
+  rotaId: string,
+  options: ExportOptions,
+  token: string,
+  filenameFallback?: string
+): Promise<void> => {
+  const query = new URLSearchParams();
+  query.append("format", options.format);
+  if (options.view) query.append("view", options.view);
+  if (options.include_notes !== undefined) {
+    query.append("include_notes", options.include_notes ? "true" : "false");
+  }
+
+  const res = await fetch(
+    `/api/v1/workspaces/${workspaceId}/rotas/${rotaId}/export?${query.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to download export.");
+  }
+
+  const blob = await res.blob();
+  const disposition = res.headers.get("content-disposition");
+  let filename = filenameFallback;
+  if (disposition && disposition.includes("filename=")) {
+    const match = disposition.match(/filename="?([^";]+)"?/);
+    if (match && match[1]) {
+      filename = match[1];
+    }
+  }
+  if (!filename) {
+    filename = `rota_${rotaId}.${options.format}`;
+  }
+
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.style.display = "none";
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
 };
 

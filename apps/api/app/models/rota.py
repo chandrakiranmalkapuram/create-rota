@@ -61,12 +61,28 @@ class Rota(Base, TimestampMixin):
         JSON,
         nullable=True,
     )  # Configured break policy specification
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    published_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
 
     # Relationships
     workspace: Mapped["Workspace"] = relationship(
         "Workspace",
         back_populates="rotas",
     )
+    published_by: Mapped["User | None"] = relationship("User")
     requirements: Mapped[list["StaffingRequirement"]] = relationship(
         "StaffingRequirement",
         back_populates="rota",

@@ -54,3 +54,38 @@
     animation: none;
   }
 }
+
+/* Browser Print Stylesheet for Rota Schedules */
+@media print {
+  @page {
+    size: landscape;
+    margin: 1cm;
+  }
+
+  /* Hide navigation chrome, sidebars, interactive controls, toolbars, and modals */
+  nav,
+  header,
+  aside,
+  button,
+  .no-print,
+  [role="dialog"] {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 10pt;
+  }
+
+  /* Make print-only sections visible */
+  .print-only {
+    display: block !important;
+  }
+
+  /* Unclip overflow to ensure table prints in full */
+  * {
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+}

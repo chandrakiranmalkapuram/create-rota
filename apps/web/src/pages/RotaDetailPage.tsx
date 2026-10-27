@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -21,6 +21,16 @@ import {
   RotateCcw,
   ShieldAlert,
   Sliders,
+  Download,
+  Printer,
+  FileSpreadsheet,
+  FileText,
+  Lock,
+  Unlock,
+  Archive,
+  ArchiveRestore,
+  X,
+  AlertCircle,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -30,6 +40,12 @@ import {
   generateRota,
   fetchRotaSnapshots,
   restoreRotaSnapshot,
+  approveRota,
+  unpublishRota,
+  archiveRota,
+  unarchiveRota,
+  deleteRota,
+  downloadRotaExport,
 } from "../services/rotaApi";
 import { fetchStaffList } from "../services/staffApi";
 import {
@@ -38,13 +54,17 @@ import {
   StaffingRequirementInput,
   StaffingRequirementBandInput,
   BreakPolicyInput,
+  ExportFormat,
+  ExportView,
 } from "../types/rota";
 import { WeeklyRotaGrid } from "../components/WeeklyRotaGrid";
+import { DuplicateRotaModal } from "../components/DuplicateRotaModal";
 
 export const RotaDetailPage: React.FC = () => {
   const { rotaId } = useParams<{ rotaId: string }>();
   const { currentWorkspace, token } = useAuth();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const workspaceId = currentWorkspace?.id || "";
 
   const [activeTab, setActiveTab] = useState<"requirements" | "generation" | "shifts" | "snapshots">("requirements");
@@ -52,6 +72,27 @@ export const RotaDetailPage: React.FC = () => {
   const [randomSeed, setRandomSeed] = useState<number>(42);
   const [breakPolicyPreset, setBreakPolicyPreset] = useState<"standard" | "uk_statutory" | "no_breaks">("standard");
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  // Export modal state
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("xlsx");
+  const [exportView, setExportView] = useState<ExportView>("staff");
+  const [exportIncludeNotes, setExportIncludeNotes] = useState<boolean>(false);
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Copy to clipboard state
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+
+  // Duplication modal state
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState<boolean>(false);
+
+  // Lifecycle modal states
+  const [isPublishModalOpen, setIsPublishModalOpen] = useState<boolean>(false);
+  const [isUnpublishModalOpen, setIsUnpublishModalOpen] = useState<boolean>(false);
+  const [isArchiveModalOpen, setIsArchiveModalOpen] = useState<boolean>(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
+  const [deleteErrorMessage, setDeleteErrorMessage] = useState<string | null>(null);
 
   // Copy modal state
   const [copySourceDate, setCopySourceDate] = useState<string | null>(null);
@@ -196,6 +237,161 @@ export const RotaDetailPage: React.FC = () => {
     },
   });
 
+  const approveMutation = useMutation({
+    mutationFn: () => approveRota(workspaceId, rotaId || "", token || ""),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["rota", workspaceId, rotaId], updated);
+      queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+      setIsPublishModalOpen(false);
+      setSaveSuccessMessage("Rota published successfully! Edits are locked until unpublished.");
+      setTimeout(() => setSaveSuccessMessage(null), 4000);
+    },
+    onError: (err: Error) => {
+      alert(err.message || "Failed to publish rota.");
+    },
+  });
+
+  const unpublishMutation = useMutation({
+    mutationFn: () => unpublishRota(workspaceId, rotaId || "", token || ""),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["rota", workspaceId, rotaId], updated);
+      queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+      setIsUnpublishModalOpen(false);
+      setSaveSuccessMessage("Rota returned to draft state. Manual editing is now enabled.");
+      setTimeout(() => setSaveSuccessMessage(null), 4000);
+    },
+    onError: (err: Error) => {
+      alert(err.message || "Failed to unpublish rota.");
+    },
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: () => archiveRota(workspaceId, rotaId || "", token || ""),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["rota", workspaceId, rotaId], updated);
+      queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+      setIsArchiveModalOpen(false);
+      setSaveSuccessMessage("Rota archived. All historical snapshots and audits remain preserved.");
+      setTimeout(() => setSaveSuccessMessage(null), 4000);
+    },
+    onError: (err: Error) => {
+      alert(err.message || "Failed to archive rota.");
+    },
+  });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: () => unarchiveRota(workspaceId, rotaId || "", token || ""),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["rota", workspaceId, rotaId], updated);
+      queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+      setSaveSuccessMessage("Rota restored from archive to draft.");
+      setTimeout(() => setSaveSuccessMessage(null), 4000);
+    },
+    onError: (err: Error) => {
+      alert(err.message || "Failed to restore rota.");
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteRota(workspaceId, rotaId || "", token || ""),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+      navigate("/rotas");
+    },
+    onError: (err: Error) => {
+      setDeleteErrorMessage(err.message || "Failed to delete rota.");
+    },
+  });
+
+  const handleDownloadExport = async () => {
+    if (!rota) return;
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const safeName = rota.name.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const filename = `${safeName}_${exportView}.${exportFormat}`;
+      await downloadRotaExport(
+        workspaceId,
+        rota.id,
+        {
+          format: exportFormat,
+          view: exportView,
+          include_notes: exportIncludeNotes,
+        },
+        token || "",
+        filename
+      );
+      setIsExportModalOpen(false);
+      setSaveSuccessMessage(`Export downloaded successfully (${exportFormat.toUpperCase()}).`);
+      setTimeout(() => setSaveSuccessMessage(null), 3000);
+    } catch (err) {
+      setExportError((err as Error).message || "Failed to download export.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleCopyToClipboard = async () => {
+    if (!rota || rota.shifts.length === 0) {
+      setCopyStatus("No shifts to copy.");
+      setTimeout(() => setCopyStatus(null), 2500);
+      return;
+    }
+
+    const headers = [
+      "Staff Name",
+      "Date",
+      "Day",
+      "Start Time",
+      "End Time",
+      "Unpaid Break (min)",
+      "Paid Hours",
+      "Role / Skill",
+    ];
+
+    const sortedShifts = [...rota.shifts].sort((a, b) => {
+      if (a.date !== b.date) return a.date.localeCompare(b.date);
+      return a.start_time.localeCompare(b.start_time);
+    });
+
+    const rows = sortedShifts.map((s) => {
+      const d = new Date(s.date);
+      const dayName = d.toLocaleDateString("en-GB", { weekday: "short" });
+      return [
+        s.staff_name,
+        s.date,
+        dayName,
+        s.start_time,
+        s.end_time,
+        s.unpaid_break_minutes.toString(),
+        s.paid_hours.toString(),
+        s.skill_name || "General",
+      ].join("\t");
+    });
+
+    const tsvText = [headers.join("\t"), ...rows].join("\n");
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(tsvText);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = tsvText;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopyStatus("Schedule copied to clipboard!");
+      setTimeout(() => setCopyStatus(null), 3000);
+    } catch {
+      setCopyStatus("Failed to copy to clipboard.");
+      setTimeout(() => setCopyStatus(null), 3000);
+    }
+  };
+
   // Helpers to manipulate local staffing requirements draft
   const handleAddBand = (dateStr: string) => {
     setLocalReqs((prev) =>
@@ -319,8 +515,34 @@ export const RotaDetailPage: React.FC = () => {
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {/* Print-Only Header */}
+      <div className="hidden print-only mb-6 border-b border-black pb-3">
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-xl font-bold text-black">
+              {currentWorkspace?.name || "Workspace"} — Staff Schedule
+            </h1>
+            <h2 className="text-lg font-semibold text-black">Schedule: {rota.name}</h2>
+            <p className="text-xs text-black">
+              Period: {startDateFormatted} — {endDateFormatted} ({rota.status.toUpperCase()})
+            </p>
+          </div>
+          <div className="text-right text-xs text-black">
+            <p>
+              Total Shifts: {rota.total_shifts} | Paid Hours: {rota.total_paid_hours}h
+            </p>
+            <p>Printed: {new Date().toLocaleString("en-GB")}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Screen-reader accessible live region for clipboard feedback */}
+      <div className="sr-only" role="status" aria-live="polite">
+        {copyStatus}
+      </div>
+
       {/* Header & Navigation */}
-      <div className="mb-4">
+      <div className="mb-4 no-print">
         <Link
           to="/rotas"
           className="inline-flex items-center gap-2 text-xs font-semibold text-slate-500 hover:text-slate-800"
@@ -330,21 +552,33 @@ export const RotaDetailPage: React.FC = () => {
         </Link>
       </div>
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+      <div className="no-print flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">{rota.name}</h1>
             <span
               className={`rounded-full px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider ${
                 rota.status === "published"
-                  ? "bg-blue-100 text-blue-800"
+                  ? "bg-blue-100 text-blue-800 border border-blue-200"
                   : rota.status === "archived"
-                  ? "bg-slate-100 text-slate-700"
-                  : "bg-amber-100 text-amber-800"
+                  ? "bg-slate-100 text-slate-700 border border-slate-200"
+                  : "bg-amber-100 text-amber-800 border border-amber-200"
               }`}
             >
               {rota.status}
             </span>
+
+            {rota.status === "published" && rota.published_at && (
+              <span className="text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200 font-medium">
+                Published {new Date(rota.published_at).toLocaleDateString("en-GB")}
+              </span>
+            )}
+
+            {rota.status === "archived" && rota.archived_at && (
+              <span className="text-[11px] text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200 font-medium">
+                Archived {new Date(rota.archived_at).toLocaleDateString("en-GB")}
+              </span>
+            )}
 
             {rota.latest_generation_status && (
               <span
@@ -376,33 +610,149 @@ export const RotaDetailPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-xs text-slate-500">Shifts / Hours</div>
-            <div className="text-sm font-bold text-slate-900">
-              {rota.total_shifts} shifts ({rota.total_paid_hours}h)
-            </div>
-          </div>
+        {/* Action Controls Bar */}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          {/* Export Button */}
           <button
             type="button"
-            onClick={() => setActiveTab("generation")}
-            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 transition-colors"
+            onClick={() => setIsExportModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 transition-colors"
+            title="Export Rota to CSV, XLSX, PDF, or DOCX"
           >
-            <Sparkles className="h-4 w-4" />
-            <span>Engine Controls</span>
+            <Download className="h-4 w-4 text-slate-500" />
+            <span>Export</span>
           </button>
+
+          {/* Copy TSV Schedule Button */}
+          <button
+            type="button"
+            onClick={handleCopyToClipboard}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 transition-colors"
+            title="Copy Schedule to Clipboard as TSV"
+          >
+            {copyStatus === "Schedule copied to clipboard!" ? (
+              <>
+                <Check className="h-4 w-4 text-emerald-600" />
+                <span className="text-emerald-700">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="h-4 w-4 text-slate-500" />
+                <span>Copy</span>
+              </>
+            )}
+          </button>
+
+          {/* Print Button */}
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 transition-colors"
+            title="Print Rota Schedule"
+          >
+            <Printer className="h-4 w-4 text-slate-500" />
+            <span>Print</span>
+          </button>
+
+          {/* Duplicate Button */}
+          <button
+            type="button"
+            onClick={() => setIsDuplicateModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-xs hover:bg-slate-50 transition-colors"
+            title="Duplicate Rota for Another Period"
+          >
+            <Copy className="h-4 w-4 text-slate-500" />
+            <span>Duplicate</span>
+          </button>
+
+          {/* Lifecycle Action Buttons */}
+          {rota.status === "draft" && (
+            <>
+              <button
+                type="button"
+                onClick={() => setIsPublishModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 transition-colors"
+              >
+                <Lock className="h-3.5 w-3.5" />
+                <span>Publish Rota</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsArchiveModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                title="Archive Rota"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                <span>Archive</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-slate-100 transition-colors"
+                title="Delete Rota"
+                aria-label="Delete Rota"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
+
+          {rota.status === "published" && (
+            <>
+              <button
+                type="button"
+                onClick={() => setIsUnpublishModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700 transition-colors"
+              >
+                <Unlock className="h-3.5 w-3.5" />
+                <span>Unpublish to Draft</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsArchiveModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                title="Archive Rota"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                <span>Archive</span>
+              </button>
+            </>
+          )}
+
+          {rota.status === "archived" && (
+            <>
+              <button
+                type="button"
+                onClick={() => unarchiveMutation.mutate()}
+                disabled={unarchiveMutation.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 transition-colors disabled:opacity-50"
+              >
+                <ArchiveRestore className="h-3.5 w-3.5" />
+                <span>{unarchiveMutation.isPending ? "Restoring..." : "Restore to Draft"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsDeleteModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition-colors"
+                title="Delete Permanently"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {saveSuccessMessage && (
-        <div className="mt-4 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800 flex items-center gap-2">
+        <div className="mt-4 rounded-lg bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-800 flex items-center gap-2 no-print">
           <Check className="h-4 w-4 text-emerald-600" />
           <span>{saveSuccessMessage}</span>
         </div>
       )}
 
       {/* Tabs Navigation */}
-      <div className="mt-6 flex flex-wrap border-b border-slate-200">
+      <div className="mt-6 flex flex-wrap border-b border-slate-200 no-print">
         <button
           type="button"
           onClick={() => setActiveTab("requirements")}
@@ -1199,6 +1549,412 @@ export const RotaDetailPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Export Schedule Modal */}
+      {isExportModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="export-modal-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isExporting) setIsExportModalOpen(false);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2">
+                <div className="rounded-lg bg-emerald-50 p-2 text-emerald-600">
+                  <Download className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 id="export-modal-title" className="text-lg font-bold text-slate-900">
+                    Export Schedule
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Download "{rota.name}" in your chosen document format
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                disabled={isExporting}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close export dialog"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {exportError && (
+              <div className="mt-4 flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 p-3 text-xs text-rose-800">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                <span>{exportError}</span>
+              </div>
+            )}
+
+            <div className="mt-4 space-y-4">
+              {/* Format Selection */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">
+                  Export Document Format
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "xlsx" as const, label: "Excel Spreadsheet (.xlsx)", icon: FileSpreadsheet },
+                    { id: "csv" as const, label: "CSV File (.csv)", icon: FileText },
+                    { id: "pdf" as const, label: "PDF Document (.pdf)", icon: FileText },
+                    { id: "docx" as const, label: "Word Document (.docx)", icon: FileText },
+                  ].map((fmt) => {
+                    const Icon = fmt.icon;
+                    const isSelected = exportFormat === fmt.id;
+                    return (
+                      <button
+                        key={fmt.id}
+                        type="button"
+                        onClick={() => setExportFormat(fmt.id)}
+                        className={`flex items-center gap-2 rounded-xl border p-2.5 text-left text-xs transition-colors ${
+                          isSelected
+                            ? "border-emerald-600 bg-emerald-50/50 text-emerald-900 font-semibold"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        <Icon
+                          className={`h-4 w-4 shrink-0 ${
+                            isSelected ? "text-emerald-600" : "text-slate-400"
+                          }`}
+                        />
+                        <span>{fmt.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* View Selection */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">
+                  Layout Structure
+                </label>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <label
+                    className={`flex items-start gap-2 rounded-xl border p-2.5 cursor-pointer transition-colors ${
+                      exportView === "staff"
+                        ? "border-emerald-600 bg-emerald-50/50 text-emerald-900 font-semibold"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="export-view"
+                      value="staff"
+                      checked={exportView === "staff"}
+                      onChange={() => setExportView("staff")}
+                      className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="block font-medium">Staff-Focused</span>
+                      <span className="text-[11px] text-slate-500 font-normal">
+                        Rows by team member with daily shifts
+                      </span>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2 rounded-xl border p-2.5 cursor-pointer transition-colors ${
+                      exportView === "day"
+                        ? "border-emerald-600 bg-emerald-50/50 text-emerald-900 font-semibold"
+                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="export-view"
+                      value="day"
+                      checked={exportView === "day"}
+                      onChange={() => setExportView("day")}
+                      className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <div>
+                      <span className="block font-medium">Day-Focused</span>
+                      <span className="text-[11px] text-slate-500 font-normal">
+                        Chronological daily coverage list
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Include Notes Checkbox */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <label className="flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={exportIncludeNotes}
+                    onChange={(e) => setExportIncludeNotes(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span>Include shift notes (excluded by default for privacy)</span>
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsExportModalOpen(false)}
+                  disabled={isExporting}
+                  className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadExport}
+                  disabled={isExporting}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {isExporting ? (
+                    <>
+                      <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                      <span>Generating File...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Download {exportFormat.toUpperCase()}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Publish Confirmation Modal */}
+      {isPublishModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="publish-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-blue-100 p-2 text-blue-700">
+                <Lock className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 id="publish-modal-title" className="text-base font-bold text-slate-900">
+                  Publish Rota Schedule
+                </h3>
+                <span className="text-xs text-slate-500">Lock rota against accidental changes</span>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/70 p-3 text-xs text-blue-900 leading-relaxed space-y-1.5">
+              <p className="font-semibold">What happens upon publishing:</p>
+              <p>• The schedule is marked official and locked from further edits.</p>
+              <p>• Shifts cannot be added, moved, updated, or deleted.</p>
+              <p>• Schedule solver generation cannot overwrite published shifts.</p>
+              <p>• If changes are required later, a manager can unpublish back to draft.</p>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => setIsPublishModalOpen(false)}
+                disabled={approveMutation.isPending}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => approveMutation.mutate()}
+                disabled={approveMutation.isPending}
+                className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {approveMutation.isPending ? "Publishing..." : "Confirm & Publish"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unpublish Confirmation Modal */}
+      {isUnpublishModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="unpublish-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-amber-100 p-2 text-amber-700">
+                <Unlock className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 id="unpublish-modal-title" className="text-base font-bold text-slate-900">
+                  Unpublish to Draft
+                </h3>
+                <span className="text-xs text-slate-500">Return schedule to editable draft state</span>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-900 leading-relaxed">
+              Returning this rota to draft state will re-enable manual shift creation, editing, moving,
+              and schedule regeneration.
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => setIsUnpublishModalOpen(false)}
+                disabled={unpublishMutation.isPending}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => unpublishMutation.mutate()}
+                disabled={unpublishMutation.isPending}
+                className="rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {unpublishMutation.isPending ? "Unpublishing..." : "Confirm & Unpublish"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archive Confirmation Modal */}
+      {isArchiveModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="archive-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-slate-100 p-2 text-slate-700">
+                <Archive className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 id="archive-modal-title" className="text-base font-bold text-slate-900">
+                  Archive Rota Schedule
+                </h3>
+                <span className="text-xs text-slate-500">Move schedule to historical archive</span>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-xs text-slate-700 leading-relaxed space-y-1.5">
+              <p className="font-semibold">Archive Policy:</p>
+              <p>• The rota will be marked as inactive and removed from active scheduling views.</p>
+              <p>• All historical shift details, generation runs, version snapshots, and manager override audits are completely preserved.</p>
+              <p>• You can restore an archived rota to draft state at any time.</p>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => setIsArchiveModalOpen(false)}
+                disabled={archiveMutation.isPending}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => archiveMutation.mutate()}
+                disabled={archiveMutation.isPending}
+                className="rounded-lg bg-slate-800 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
+              >
+                {archiveMutation.isPending ? "Archiving..." : "Confirm & Archive"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="rounded-full bg-rose-100 p-2 text-rose-700">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 id="delete-modal-title" className="text-base font-bold text-slate-900">
+                  Permanently Delete Rota
+                </h3>
+                <span className="text-xs text-slate-500">Destructive deletion confirmation</span>
+              </div>
+            </div>
+
+            {deleteErrorMessage && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg bg-rose-50 border border-rose-200 p-2.5 text-xs text-rose-800">
+                <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
+                <span>{deleteErrorMessage}</span>
+              </div>
+            )}
+
+            <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-900 leading-relaxed">
+              <p className="font-semibold text-rose-950">Warning: Irreversible action</p>
+              <p className="mt-1">
+                This will permanently delete "{rota.name}" and purge all child records including
+                its {rota.total_shifts} shifts, demand requirements, generation runs, snapshots,
+                and manager override audits.
+              </p>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setDeleteErrorMessage(null);
+                }}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg bg-rose-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Permanently Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Rota Modal */}
+      {isDuplicateModalOpen && (
+        <DuplicateRotaModal
+          isOpen={isDuplicateModalOpen}
+          rota={rota}
+          onClose={() => setIsDuplicateModalOpen(false)}
+          onSuccess={(newRota) => {
+            queryClient.invalidateQueries({ queryKey: ["rotas", workspaceId] });
+            navigate(`/rotas/${newRota.id}`);
+          }}
+        />
       )}
     </div>
   );
